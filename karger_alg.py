@@ -2,22 +2,26 @@ import numpy as np
 
 # Perform Karger's algorithm
 # WARNING: This will clear the adjacency matrix, so make sure you pass it a COPY of anything you care about
-def generate_karger(adj_mat, seed):
+def generate_karger(adj_mat, test_p, seed):
 
     gen = np.random.default_rng(seed)
     
     # Number of molecules
     num_nodes = len(adj_mat)
 
-    # Total number of edges
-    num_edges = (len(adj_mat) ** 2 - len(adj_mat)) // 2
+    col_sums = np.sum(adj_mat, axis=0)
+    free_mols = np.where(col_sums == 0)[0]
 
     # Stop the algorithm once a supernode reaches this size
-    SUPERNODE_CUTOFF = .2 * num_nodes
+    SUPERNODE_CUTOFF = test_p * num_nodes - len(free_mols)
+    
+    # Remove the supernode cutoff for traditional karger's alg
+    # SUPERNODE_CUTOFF = num_nodes + 1 
     
     # Each node starts off on its own (N supernodes), and they will merge until one supernode reaches SUPERNODE_CUTOFF size
     supernodes = [{i} for i in range(0, num_nodes)]
 
+    # While there are supernodes to be merged
     while len(supernodes) > 2:
     
         p, q = select_rand_edge(adj_mat, gen)
@@ -26,13 +30,13 @@ def generate_karger(adj_mat, seed):
         merge_nodes(p, q, adj_mat)
         new_supernode = merge_sets(p, q, supernodes)
 
+        # If a supernode exceeds the cutoff size
         if len(new_supernode) >= SUPERNODE_CUTOFF:
-            return new_supernode, {i for i in range(0, num_nodes)} - new_supernode
+            new_supernode.update(free_mols)
+            return list({i for i in range(0, num_nodes)} - new_supernode), list(new_supernode)
         
 
-    print("Done")
-
-    return list(supernodes[0]), list(supernodes[1])
+    return list(supernodes[0]).extend(free_mols), list(supernodes[1])
 
 
 # Picks a random weighted edge
@@ -78,7 +82,8 @@ def merge_nodes(i, j, upper_mat):
 
 
 
-# Merges the sets of val1 and val2 for returning purposes
+# Merges the set containing val1 with the set containing val2
+# Will update set_list to contain the new set and remove the old sets
 def merge_sets(val1, val2, set_list):
 
 

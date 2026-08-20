@@ -6,27 +6,30 @@ from pathlib import Path
 
 import umap.umap_ as umap
 from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.utils.validation import check_random_state
 
 
-def random_split(mols, val_p, seed):
+def random_split(mols, test_p, seed):
 
-    assert val_p <= 1
-    assert val_p >= 0
+    assert test_p <= 1
+    assert test_p >= 0
 
     total_len = len(mols)
-    val_len = round(total_len * val_p)
+    test_len = round(total_len * test_p)
     
     rng = np.random.default_rng(seed=seed)
     
-    val = rng.choice(total_len, val_len, replace=False)
+    test = rng.choice(total_len, test_len, replace=False)
 
-    train = [i for i in range(total_len) if not i in val]
+    train = [i for i in range(total_len) if not i in test]
 
-    return train, list(val)
+    return train, list(test)
 
 
 
-# Scaffold and UMAP split sourced from https://github.com/vynkdo/SPECTRA_evaluation/blob/main/generate_data/create_random_scaffold_umap_splits.py line 58
+# Scaffold and UMAP split sourced from https://github.com/vynkdo/SPECTRA_evaluation/blob/main/generate_data/create_random_scaffold_umap_splits.py 
+
+
 def preprocess_scaffold(mols):
     
     scaffolds = []
@@ -41,11 +44,11 @@ def preprocess_scaffold(mols):
     return scaffold_to_ix_map
                                                         # tolerance on proportion away 
                                                         # from desired train proportion
-def scaffold_split(mols, val_p, seed, scaffold_to_ix_map, tol=0.01, verbose=False):
+def scaffold_split(mols, test_p, seed, scaffold_to_ix_map, tol=0.01, verbose=False):
 
     random.seed(seed)
 
-    train_prop = 1 - val_p
+    train_prop = 1 - test_p
 
     train_indices = []
     test_indices = []
@@ -77,10 +80,10 @@ def scaffold_split(mols, val_p, seed, scaffold_to_ix_map, tol=0.01, verbose=Fals
 # from sklearn.metrics import silhouette_score
 # import matplotlib.pyplot as plt
 
-def umap_split(mfps, val_p, seed, n_clusters=7, save_plot_path=None):
+def umap_split(mfps, test_p, seed, n_clusters=7, save_plot_path=None):
     
     
-    test_size = round(val_p * len(mfps))
+    test_size = round(test_p * len(mfps))
 
     if save_plot_path is not None:
         save_plot_path = Path(save_plot_path)
@@ -93,18 +96,8 @@ def umap_split(mfps, val_p, seed, n_clusters=7, save_plot_path=None):
 
     cluster_labels = kmeans.fit_predict(mfp_umap)
 
-    # s_results = []
-    # s_score = silhouette_score(mfp_umap, cluster_labels)
-    # s_results.append({'dataset': f'{dataset_name}_{i}',
-    #                   'silhouette_score': {s_score}})
-
-    # plt.figure(figsize=(6,6))
-    # plt.scatter(mfp_umap[:, 0], mfp_umap[:, 1], c = cluster_labels)
-    # plt.title(f"{dataset_name} - UMAP embedding {i}")
-    # plt.xlabel("UMAP-1")
-    # plt.ylabel("UMAP-2")
-    # plt.savefig(os.path.join(umap_save_dir_plot, f"{dataset_name}_umap_{i}.png"), dpi=400)
-    # plt.close()
+    # Can be used to save the embeddings
+    # embeddings = (mfp_umap[:, 0], mfp_umap[:, 1])
 
     cluster_index, counts = np.unique(cluster_labels, return_counts=True)
     difference_list = [abs(test_size - j) for j in counts]
@@ -117,30 +110,27 @@ def umap_split(mfps, val_p, seed, n_clusters=7, save_plot_path=None):
     assert len(set(umap_train_indices) & set(umap_test_indices)) == 0
     assert len(set(np.concatenate([umap_train_indices, umap_test_indices]))) == len(mfps)
         
-    # silhouette_df = pd.DataFrame(s_results)
-    # s_results_save_dir = os.path.join('splits_data', 'umap_silhouette_results')
-    # os.makedirs(s_results_save_dir)
-    # silhouette_df.to_csv(os.path.join(s_results_save_dir, f'{dataset_name}_silhouette_scores.csv'))
-    
-    # print(f"UMAP splits {dataset_name} done.")
-    
-    # with open(f"splits/{NAME}_umap_0", "r") as file:
-    #     umap_split = json.load(file)
-        
-    # print(f"UMAP_{i}: ", adj_mat_cso(ADJ_MAT, umap_split["train"], umap_split["val"]))
-
 
     return umap_train_indices, umap_test_indices
 
 
 # Important: This version takes BINARY data labels and will break if there are not only 0 or 1 in the data_labels iterable
-def spectral_split(adj_mat, data_labels, seed, cluster_count=5):
+# Code referenced from https://github.com/arunraja-hub/quadmetformer/blob/b5789c52a2701009005b98930fae24f8c136142f/finetuning/preprocessing_tdc_dataset.py line 1159
+def spectral_split(adj_mat, data_labels, test_p, seed):
+
+    random_state = check_random_state(seed)
+
+    cluster_count = int(1 / test_p)
+
 
     assert len(adj_mat) == len(data_labels), "Incorrect data labels for provided affinity matrix"
     
-    clustering = SpectralClustering(n_clusters=cluster_count,
-            affinity="precomputed",
-            random_state=seed).fit(adj_mat)
+    clustering = SpectralClustering(
+        n_clusters=cluster_count,
+        assign_labels='kmeans',
+        n_init=10,
+        random_state=random_state,
+        affinity="precomputed").fit(adj_mat)
 
     cluster_assignments = clustering.labels_
     clusters = []
@@ -162,18 +152,30 @@ def spectral_split(adj_mat, data_labels, seed, cluster_count=5):
         
         cluster_scores[x] = lb_score
 
-
-    
-    val = []
-    cluster_rank = 0
     cluster_order = np.argsort(cluster_scores)
+
+    # Begin the test set with the best cluster
+    best_cluster_idx = cluster_order[0]
+    test = list(clusters[best_cluster_idx])
+
+    # Add next-best clusters...
+    cluster_rank = 1
     
-    while(len(val) < 0.2 * len(data_labels)):
-        # Pick the next-smallest cluster
+    while(True):
         next_cluster_i = cluster_order[cluster_rank]
-        val.extend(clusters[next_cluster_i])
+        next_cluster = clusters[next_cluster_i]
+
+        # ... until the target size would be exceeded
+        if (len(test) + len(next_cluster) > test_p * len(data_labels)):
+            break
+
+        test.extend(next_cluster)
         cluster_rank += 1
 
-    train = [x for x in range(len(data_labels)) if not x in set(val)]
+        # Could also stop here... increases CSO for the BACE dataset at least
+        # if (len(test) > test_p * len(data_labels)):
+        #     break
+
+    train = [x for x in range(len(data_labels)) if x not in test]
     
-    return train, val
+    return train, test
